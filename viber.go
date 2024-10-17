@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+// HTTPClient is the type needed for the bot to perform HTTP requests.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 // Sender structure
 type Sender struct {
 	Name   string `json:"name"`
@@ -57,10 +62,8 @@ type Viber struct {
 	Delivered           func(v *Viber, userID string, token uint64, t time.Time)
 	Seen                func(v *Viber, userID string, token uint64, t time.Time)
 	Failed              func(v *Viber, userID string, token uint64, descr string, t time.Time)
-
-	// client for sending messages
-	Client *http.Client
-	Buffer int `json:"buffer"`
+	Client              HTTPClient `json:"-"`
+	Buffer              int        `json:"buffer"`
 }
 
 type EventsChannel <-chan Evt
