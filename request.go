@@ -3,7 +3,7 @@ package viber
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 )
 
@@ -19,18 +19,18 @@ func (v *Viber) PostData(url string, i interface{}) ([]byte, error) {
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(b))
 	req.Header.Add("X-Viber-Auth-Token", v.AppKey)
 	req.Close = true
-	
-	if v.client == nil {
-		v.client = &http.Client{}
+
+	if v.Client == nil {
+		v.Client = &http.Client{}
 	}
 
-	resp, err := v.client.Do(req)
+	resp, err := v.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
