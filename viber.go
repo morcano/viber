@@ -95,6 +95,14 @@ func (e *Evt) GetUser() *User {
 	return &u
 }
 
+func (e *Evt) GetSender() *User {
+	var u User
+	if err := json.Unmarshal(e.Sender, &u); err != nil {
+		return nil
+	}
+	return &u
+}
+
 func (e *Evt) GetTextMessage() *TextMessage {
 	var msgType MsgType
 	if err := json.Unmarshal(e.Message, &msgType); err != nil {
