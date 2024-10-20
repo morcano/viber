@@ -5,13 +5,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 )
+
+// HTTPClient is the type needed for the bot to perform HTTP requests.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
 
 // Sender structure
 type Sender struct {
@@ -19,7 +25,7 @@ type Sender struct {
 	Avatar string `json:"avatar,omitempty"`
 }
 
-type event struct {
+type Evt struct {
 	Event        string    `json:"event"`
 	Timestamp    Timestamp `json:"timestamp"`
 	MessageToken uint64    `json:"message_token,omitempty"`
@@ -39,6 +45,10 @@ type event struct {
 	Message json.RawMessage `json:"message,omitempty"`
 }
 
+type MsgType struct {
+	Type string `json:"type"`
+}
+
 // Viber app
 type Viber struct {
 	AppKey string
@@ -52,19 +62,20 @@ type Viber struct {
 	Delivered           func(v *Viber, userID string, token uint64, t time.Time)
 	Seen                func(v *Viber, userID string, token uint64, t time.Time)
 	Failed              func(v *Viber, userID string, token uint64, descr string, t time.Time)
-
-	// client for sending messages
-	client *http.Client
+	Client              HTTPClient `json:"-"`
+	Buffer              int        `json:"buffer"`
+	Debug               bool       `json:"debug"`
 }
+
+type EventsChannel <-chan Evt
 
 var (
 	// Log errors, set to logger if you want to log package activities and errors
-	Log               = log.New(ioutil.Discard, "Viber >>", 0)
-	regexpPeekMsgType = regexp.MustCompile("\"type\":\\s*\"([^\"]+)\"")
+	Log = log.New(ioutil.Discard, "Viber >>", 0)
 )
 
 // New returns Viber app with specified app key and default sender
-// You can also create *VIber{} struct directly
+// You can also create *Viber{} struct directly
 func New(appKey, senderName, senderAvatar string) *Viber {
 	return &Viber{
 		AppKey: appKey,
@@ -72,16 +83,84 @@ func New(appKey, senderName, senderAvatar string) *Viber {
 			Name:   senderName,
 			Avatar: senderAvatar,
 		},
-		client: &http.Client{},
+		Buffer: 100,
+		Client: &http.Client{},
 	}
 }
 
-// ServeHTTP
+func (e *Evt) GetUser() *User {
+	var u User
+	if err := json.Unmarshal(e.User, &u); err != nil {
+		return nil
+	}
+	return &u
+}
+
+func (e *Evt) GetSender() *User {
+	var u User
+	if err := json.Unmarshal(e.Sender, &u); err != nil {
+		return nil
+	}
+	return &u
+}
+
+func (e *Evt) GetTextMessage() *TextMessage {
+	var msgType MsgType
+	if err := json.Unmarshal(e.Message, &msgType); err != nil {
+		return nil
+	}
+
+	if msgType.Type != "text" {
+		return nil
+	}
+
+	var m TextMessage
+	if err := json.Unmarshal(e.Message, &m); err != nil {
+		return nil
+	}
+	return &m
+}
+
+func (v *Viber) ListenForWebhookRespReqFormat(w http.ResponseWriter, r *http.Request) EventsChannel {
+	ch := make(chan Evt, v.Buffer)
+
+	func(w http.ResponseWriter, r *http.Request) {
+		event, err := v.HandleEvent(r)
+		if err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			w.WriteHeader(http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(errMsg)
+			return
+		}
+
+		ch <- *event
+		close(ch)
+	}(w, r)
+
+	return ch
+}
+
+func (v *Viber) HandleEvent(r *http.Request) (*Evt, error) {
+	if r.Method != http.MethodPost {
+		err := errors.New("wrong HTTP method required POST")
+		return nil, err
+	}
+
+	var event Evt
+	err := json.NewDecoder(r.Body).Decode(&event)
+	if err != nil {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+// ServeHTTP deprecated, from original package
 // https://developers.viber.com/docs/api/rest-bot-api/#callbacks
 func (v *Viber) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
-	body, err := ioutil.ReadAll(r.Body)
-	r.Body.Close()
+	body, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
 	if err != nil {
 		Log.Println(err)
 		return
@@ -94,7 +173,7 @@ func (v *Viber) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var e event
+	var e Evt
 	if err := json.Unmarshal(body, &e); err != nil {
 		Log.Println(err)
 		return
@@ -154,7 +233,7 @@ func (v *Viber) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			msgType := peakMessageType(e.Message)
+			msgType := v.peakMessageType(e.Message)
 			switch msgType {
 			case "text":
 				var m TextMessage
@@ -201,25 +280,18 @@ func (v *Viber) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // checkHMAC reports whether messageMAC is a valid HMAC tag for message.
 func (v *Viber) checkHMAC(message []byte, messageMAC string) bool {
-	hmac := hmac.New(sha256.New, []byte(v.AppKey))
-	hmac.Write(message)
-	return messageMAC == hex.EncodeToString(hmac.Sum(nil))
+	newHmac := hmac.New(sha256.New, []byte(v.AppKey))
+	newHmac.Write(message)
+
+	return messageMAC == hex.EncodeToString(newHmac.Sum(nil))
 }
 
-// peakMessageType uses regexp to determin message type for unmarshaling
-func peakMessageType(b []byte) string {
-	matches := regexpPeekMsgType.FindAllSubmatch(b, -1)
-	if len(matches) == 0 {
+// peakMessageType uses regexp to determine message type for unmarshalling
+func (v *Viber) peakMessageType(b []byte) string {
+	var msgType MsgType
+	if err := json.Unmarshal(b, &msgType); err != nil {
+		Log.Println(err)
 		return ""
 	}
-
-	return strings.ToLower(string(matches[0][1]))
-}
-
-// SetRequestTimeout for sending messages to viber server
-func (v *Viber) SetRequestTimeout(t time.Duration) {
-	if v.client == nil {
-		v.client = &http.Client{}
-	}
-	v.client.Timeout = t
+	return strings.ToLower(msgType.Type)
 }
