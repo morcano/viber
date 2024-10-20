@@ -87,6 +87,14 @@ func New(appKey, senderName, senderAvatar string) *Viber {
 	}
 }
 
+func (e *Evt) GetUser() *User {
+	var u User
+	if err := json.Unmarshal(e.User, &u); err != nil {
+		return nil
+	}
+	return &u
+}
+
 func (v *Viber) ListenForWebhookRespReqFormat(w http.ResponseWriter, r *http.Request) EventsChannel {
 	ch := make(chan Evt, v.Buffer)
 
