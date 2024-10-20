@@ -64,6 +64,7 @@ type Viber struct {
 	Failed              func(v *Viber, userID string, token uint64, descr string, t time.Time)
 	Client              HTTPClient `json:"-"`
 	Buffer              int        `json:"buffer"`
+	Debug               bool       `json:"debug"`
 }
 
 type EventsChannel <-chan Evt
