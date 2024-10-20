@@ -95,6 +95,23 @@ func (e *Evt) GetUser() *User {
 	return &u
 }
 
+func (e *Evt) GetTextMessage() *TextMessage {
+	var msgType MsgType
+	if err := json.Unmarshal(e.Message, &msgType); err != nil {
+		return nil
+	}
+
+	if msgType.Type != "text" {
+		return nil
+	}
+
+	var m TextMessage
+	if err := json.Unmarshal(e.Message, &m); err != nil {
+		return nil
+	}
+	return &m
+}
+
 func (v *Viber) ListenForWebhookRespReqFormat(w http.ResponseWriter, r *http.Request) EventsChannel {
 	ch := make(chan Evt, v.Buffer)
 
